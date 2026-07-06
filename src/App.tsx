@@ -1,0 +1,1146 @@
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
+import dayjs from 'dayjs'
+import * as XLSX from 'xlsx'
+import { v4 as uuidv4 } from 'uuid'
+
+// ─── Types ───────────────────────────────────────────────
+interface PlatformData {
+  date: string
+  platform: string
+  owner: string            // 归属：Foryou / 木易杨 / 管理员
+  channel: string          // 渠道：normal / live
+  salesAmount: number      // 销售金额
+  refundAmount: number     // 退款金额
+  paymentCount: number     // 支付件数
+  paymentUsers: number     // 支付人数
+  promotionCost: number    // 推广费
+}
+
+
+interface FilterState {
+  platforms: string[]
+  startDate: string
+  endDate: string
+}
+
+type ViewMode = 'edit' | 'view'
+type UserRole = 'admin' | 'viewer' | null
+
+// ─── Constants ───────────────────────────────────────────
+const PLATFORMS = ['抖店', '淘宝', '微信', '快手', '拼多多', '小红书']
+
+const PLATFORM_CONFIG: Record<string, { icon: string; cls: string }> = {
+  抖店:       { icon: '🔴', cls: 'doudian' },
+  淘宝:       { icon: '🟠', cls: 'taobao' },
+  微信:       { icon: '🟢', cls: 'wechat' },
+  快手:       { icon: '🔵', cls: 'kuaishou' },
+  拼多多:     { icon: '🩷', cls: 'pinduoduo' },
+  小红书:     { icon: '❤️', cls: 'xiaohongshu' },
+}
+
+const GUEST_PASSWORDS = { guest_a: 'foryou123', guest_b: 'muyiyang123' }
+
+const PIE_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6']
+
+const GUEST_A_DATA_KEY = 'ecom_dashboard_guest_a_data'
+const GUEST_B_DATA_KEY = 'ecom_dashboard_guest_b_data'
+const ADMIN_DATA_KEY = 'ecom_dashboard_admin_data'
+const LINKS_KEY = 'ecom_dashboard_links'
+const LIVE_DATA_KEY = 'ecom_dashboard_live_data'
+
+// ─── Helpers ─────────────────────────────────────────────
+function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function todayStr() {
+  return dayjs().format('YYYY-MM-DD')
+}
+
+function weekAgoStr() {
+  return dayjs().subtract(6, 'day').format('YYYY-MM-DD')
+}
+
+function generateShareLink() {
+  return `${window.location.origin}${window.location.pathname}#share=${uuidv4()}`
+}
+
+function parseShareLink(): string | null {
+  const hash = window.location.hash.slice(1)
+  const match = hash.match(/share=([a-z0-9-]+)/i)
+  return match ? match[1] : null
+}
+
+// ─── Demo Data ───────────────────────────────────────────
+function generateGuestADemoData(): PlatformData[] {
+  const data: PlatformData[] = []
+  for (let d = 30; d >= 0; d--) {
+    const date = dayjs().subtract(d, 'day').format('YYYY-MM-DD')
+    for (const platform of PLATFORMS) {
+      const baseN = Math.random() * 40000 + 8000
+      data.push({ date, platform, owner: 'Foryou', channel: 'normal', salesAmount: Math.round(baseN), refundAmount: Math.round(baseN * (Math.random() * 0.15)), paymentCount: Math.floor(Math.random() * 400 + 40), paymentUsers: Math.floor(Math.random() * 350 + 20), promotionCost: Math.round(baseN * (Math.random() * 0.1 + 0.02)) })
+      const baseL = Math.random() * 30000 + 5000
+      data.push({ date, platform, owner: 'Foryou', channel: 'live', salesAmount: Math.round(baseL), refundAmount: Math.round(baseL * (Math.random() * 0.1)), paymentCount: Math.floor(Math.random() * 300 + 30), paymentUsers: Math.floor(Math.random() * 250 + 15), promotionCost: Math.round(baseL * (Math.random() * 0.12 + 0.03)) })
+    }
+  }
+  return data
+}
+
+function generateGuestBDemoData(): PlatformData[] {
+  const data: PlatformData[] = []
+  for (let d = 30; d >= 0; d--) {
+    const date = dayjs().subtract(d, 'day').format('YYYY-MM-DD')
+    for (const platform of PLATFORMS) {
+      const baseN = Math.random() * 35000 + 5000
+      data.push({ date, platform, owner: '木易杨', channel: 'normal', salesAmount: Math.round(baseN), refundAmount: Math.round(baseN * (Math.random() * 0.12)), paymentCount: Math.floor(Math.random() * 300 + 30), paymentUsers: Math.floor(Math.random() * 250 + 15), promotionCost: Math.round(baseN * (Math.random() * 0.08 + 0.01)) })
+      const baseL = Math.random() * 25000 + 3000
+      data.push({ date, platform, owner: '木易杨', channel: 'live', salesAmount: Math.round(baseL), refundAmount: Math.round(baseL * (Math.random() * 0.08)), paymentCount: Math.floor(Math.random() * 200 + 20), paymentUsers: Math.floor(Math.random() * 180 + 10), promotionCost: Math.round(baseL * (Math.random() * 0.1 + 0.02)) })
+    }
+  }
+  return data
+}
+
+function generateDemoData(): PlatformData[] {
+  const data: PlatformData[] = []
+  for (let d = 30; d >= 0; d--) {
+    const date = dayjs().subtract(d, 'day').format('YYYY-MM-DD')
+    for (const platform of PLATFORMS) {
+      const baseN = Math.random() * 50000 + 10000
+      data.push({ date, platform, owner: '管理员', channel: 'normal', salesAmount: Math.round(baseN), refundAmount: Math.round(baseN * (Math.random() * 0.15)), paymentCount: Math.floor(Math.random() * 500 + 50), paymentUsers: Math.floor(Math.random() * 400 + 30), promotionCost: Math.round(baseN * (Math.random() * 0.1 + 0.02)) })
+      const baseL = Math.random() * 35000 + 5000
+      data.push({ date, platform, owner: '管理员', channel: 'live', salesAmount: Math.round(baseL), refundAmount: Math.round(baseL * (Math.random() * 0.1)), paymentCount: Math.floor(Math.random() * 400 + 40), paymentUsers: Math.floor(Math.random() * 350 + 20), promotionCost: Math.round(baseL * (Math.random() * 0.12 + 0.03)) })
+    }
+  }
+  return data
+}
+
+function generateLiveDemoData(): PlatformData[] {
+  const data: PlatformData[] = []
+  for (let d = 30; d >= 0; d--) {
+    const date = dayjs().subtract(d, 'day').format('YYYY-MM-DD')
+    for (const platform of PLATFORMS) {
+      const base = Math.random() * 60000 + 15000
+      data.push({
+        date, platform, owner: '直播', channel: 'live',
+        salesAmount: Math.round(base),
+        refundAmount: Math.round(base * (Math.random() * 0.1)),
+        paymentCount: Math.floor(Math.random() * 600 + 60),
+        paymentUsers: Math.floor(Math.random() * 500 + 40),
+        promotionCost: Math.round(base * (Math.random() * 0.12 + 0.03)),
+      })
+    }
+  }
+  return data
+}
+
+// ─── Main Component ──────────────────────────────────────
+export default function App() {
+  // Each guest has their own isolated dataset
+  const [guestAData, setGuestAData] = useState<PlatformData[]>(() => loadFromStorage(GUEST_A_DATA_KEY, []))
+  const [guestBData, setGuestBData] = useState<PlatformData[]>(() => loadFromStorage(GUEST_B_DATA_KEY, []))
+  // Admin data (no owner)
+  const [adminData, setAdminData] = useState<PlatformData[]>(() => loadFromStorage(ADMIN_DATA_KEY, []))
+  const [liveData, setLiveData] = useState<PlatformData[]>(() => loadFromStorage(LIVE_DATA_KEY, []))
+  const [isLiveMode, setIsLiveMode] = useState(false)
+  const [shareLinks, setShareLinks] = useState<Record<string, boolean>>(() => loadFromStorage(LINKS_KEY, {}))
+  const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD')
+  const [filters, setFilters] = useState<FilterState>({
+    platforms: [...PLATFORMS],
+    startDate: yesterday,
+    endDate: yesterday,
+  })
+  const [viewMode, setViewMode] = useState<ViewMode>('edit')
+  const [activePlatform, setActivePlatform] = useState<string>('all')
+  const [sortBy, setSortBy] = useState<string>('date')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const [shareUrl, setShareUrl] = useState('')
+  const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('ecom_auth_logged_in') === 'true')
+  const [role, setRole] = useState<UserRole>(() => {
+    const savedRole = localStorage.getItem('ecom_auth_role')
+    return savedRole === 'admin' ? 'admin' : savedRole === 'viewer' ? 'viewer' : null
+  })
+  const [showLogin, setShowLogin] = useState(() => localStorage.getItem('ecom_auth_logged_in') !== 'true')
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [currentGuestId, setCurrentGuestId] = useState<string | null>(null)
+  const [currentUser, setCurrentUser] = useState('')
+  const [showGuestPassword, setShowGuestPassword] = useState(false)
+  const [guestPassword, setGuestPassword] = useState('')
+  const [guestLoginTarget, setGuestLoginTarget] = useState<'guest_a' | 'guest_b' | null>(null)
+  const [guestLoginError, setGuestLoginError] = useState('')
+
+  // Check share link on mount
+  useEffect(() => {
+    const linkId = parseShareLink()
+    if (linkId && shareLinks[linkId]) {
+      setViewMode('view')
+      showToast('当前为只读模式（分享链接查看）')
+    }
+  }, [])
+
+  // Persist guest data (kept for compatibility, but guests now see admin data)
+  useEffect(() => {
+    localStorage.setItem(GUEST_A_DATA_KEY, JSON.stringify(guestAData))
+  }, [guestAData])
+
+  useEffect(() => {
+    localStorage.setItem(GUEST_B_DATA_KEY, JSON.stringify(guestBData))
+  }, [guestBData])
+
+  useEffect(() => {
+    localStorage.setItem(ADMIN_DATA_KEY, JSON.stringify(adminData))
+  }, [adminData])
+
+  useEffect(() => {
+    localStorage.setItem(LIVE_DATA_KEY, JSON.stringify(liveData))
+  }, [liveData])
+
+  useEffect(() => {
+    localStorage.setItem(LINKS_KEY, JSON.stringify(shareLinks))
+  }, [shareLinks])
+
+  // Persist auth state
+  useEffect(() => {
+    localStorage.setItem('ecom_auth_logged_in', String(isLoggedIn))
+    if (isLoggedIn) {
+      localStorage.setItem('ecom_auth_role', role || 'admin')
+    } else {
+      localStorage.removeItem('ecom_auth_logged_in')
+      localStorage.removeItem('ecom_auth_role')
+    }
+  }, [isLoggedIn, role])
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+    setTimeout(() => setToast(null), 2500)
+  }, [])
+
+  // ─── Filtering ─────────────────────────────────────────
+  // Get current user's data (fully isolated by guest)
+  const FORYOU_EXCLUDED_PLATFORMS = ['快手', '拼多多']
+
+  const currentUserData = useMemo(() => {
+    // Select dataset based on current identity
+    let data: PlatformData[]
+    if (currentGuestId === 'guest_a') {
+      // Foryou: see Foryou's data + admin data, exclude 快手 and 拼多多
+      const guestData = guestAData.filter(d => !FORYOU_EXCLUDED_PLATFORMS.includes(d.platform))
+      data = [...guestData, ...adminData]
+    } else if (currentGuestId === 'guest_b') {
+      // 木易杨: see 木易杨's data + admin data
+      data = [...guestBData, ...adminData]
+    } else {
+      // Admin or viewer: see all combined data
+      data = adminData
+    }
+    // Channel filter: live mode shows only live, default shows only normal
+    if (isLiveMode) {
+      return data.filter(d => d.channel === 'live')
+    }
+    return data.filter(d => d.channel === 'normal')
+  }, [adminData, guestAData, guestBData, currentGuestId, isLiveMode])
+
+  const filteredData = useMemo(() => {
+    let result = currentUserData.filter(d => {
+      if (!filters.platforms.includes(d.platform)) return false
+      return d.date >= filters.startDate && d.date <= filters.endDate
+    })
+    // Sort
+    result.sort((a, b) => {
+      let cmp = 0
+      const valA = a[sortBy as keyof PlatformData]
+      const valB = b[sortBy as keyof PlatformData]
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        cmp = valA.localeCompare(valB)
+      } else {
+        cmp = (Number(valA) || 0) - (Number(valB) || 0)
+      }
+      return sortDir === 'desc' ? -cmp : cmp
+    })
+    return result
+  }, [currentUserData, filters, sortBy, sortDir])
+
+  // ─── Aggregated metrics ────────────────────────────────
+  const summary = useMemo(() => {
+    const totalSales = filteredData.reduce((s, d) => s + d.salesAmount, 0)
+    const totalRefund = filteredData.reduce((s, d) => s + d.refundAmount, 0)
+    const totalCount = filteredData.reduce((s, d) => s + d.paymentCount, 0)
+    const totalUsers = filteredData.reduce((s, d) => s + d.paymentUsers, 0)
+    const totalPromotion = filteredData.reduce((s, d) => s + d.promotionCost, 0)
+    const refundRate = totalSales > 0 ? (totalRefund / totalSales * 100) : 0
+    return { totalSales, totalRefund, totalCount, totalUsers, totalPromotion, refundRate }
+  }, [filteredData])
+
+  // ─── Platform breakdown ────────────────────────────────
+  const platformBreakdown = useMemo(() => {
+    const map = new Map<string, PlatformData>()
+    for (const d of filteredData) {
+      const prev = map.get(d.platform) || { date: '', platform: d.platform, owner: '', channel: 'normal', salesAmount: 0, refundAmount: 0, paymentCount: 0, paymentUsers: 0, promotionCost: 0 }
+      map.set(d.platform, {
+        ...prev,
+        channel: d.channel,
+        salesAmount: prev.salesAmount + d.salesAmount,
+        refundAmount: prev.refundAmount + d.refundAmount,
+        paymentCount: prev.paymentCount + d.paymentCount,
+        paymentUsers: prev.paymentUsers + d.paymentUsers,
+        promotionCost: prev.promotionCost + d.promotionCost,
+      })
+    }
+    return Array.from(map.values()).sort((a, b) => b.salesAmount - a.salesAmount)
+  }, [filteredData])
+
+  // ─── Daily trend ───────────────────────────────────────
+  const dailyTrend = useMemo(() => {
+    const map = new Map<string, { sales: number; refund: number; promotion: number }>()
+    for (const d of filteredData) {
+      const prev = map.get(d.date) || { sales: 0, refund: 0, promotion: 0 }
+      map.set(d.date, { sales: prev.sales + d.salesAmount, refund: prev.refund + d.refundAmount, promotion: prev.promotion + d.promotionCost })
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, v]) => ({ date, ...v }))
+  }, [filteredData])
+
+  // ─── Monthly breakdown ─────────────────────────────────
+  const monthlyBreakdown = useMemo(() => {
+    const map = new Map<string, { sales: number; refund: number; count: number; users: number; promotion: number }>()
+    for (const d of filteredData) {
+      const month = d.date.substring(0, 7) // 'YYYY-MM'
+      const prev = map.get(month) || { sales: 0, refund: 0, count: 0, users: 0, promotion: 0 }
+      map.set(month, {
+        sales: prev.sales + d.salesAmount,
+        refund: prev.refund + d.refundAmount,
+        count: prev.count + d.paymentCount,
+        users: prev.users + d.paymentUsers,
+        promotion: prev.promotion + d.promotionCost,
+      })
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([month, v]) => ({
+        month,
+        sales: v.sales,
+        refund: v.refund,
+        count: v.count,
+        users: v.users,
+        promotion: v.promotion,
+        refundRate: v.sales > 0 ? (v.refund / v.sales * 100) : 0,
+      }))
+  }, [filteredData])
+
+  // ─── Pie chart data ────────────────────────────────────
+  const pieData = useMemo(() => {
+    return platformBreakdown.map((d, i) => ({
+      name: d.platform,
+      value: Math.round(d.salesAmount),
+      color: PIE_COLORS[i % PIE_COLORS.length],
+    }))
+  }, [platformBreakdown])
+
+  // ─── Handlers ──────────────────────────────────────────
+
+  const datePresets: Record<string, { label: string; days?: number; month?: string }> = {
+    yesterday: { label: '昨日', days: 1 },
+    '7d': { label: '近7天', days: 7 },
+    '30d': { label: '近30天', days: 30 },
+    month: { label: '本月', month: dayjs().format('YYYY-MM') },
+    'last-month': { label: '上月', month: dayjs().subtract(1, 'month').format('YYYY-MM') },
+    all: { label: '全部' },
+  }
+
+  const handleDatePreset = (key: string) => {
+    const preset = datePresets[key]
+    if (!preset) return
+    if (preset.days !== undefined) {
+      const days = preset.days;
+      const endDate = dayjs().subtract(1, 'day').format('YYYY-MM-DD'); // yesterday
+      const startDate = dayjs().subtract(days, 'day').format('YYYY-MM-DD');
+      setFilters(prev => ({
+        ...prev,
+        startDate,
+        endDate,
+      }))
+    } else if (preset.month) {
+      const [year, month] = preset.month.split('-')
+      const start = `${year}-${month}-01`
+      const end = dayjs(preset.month, 'YYYY-MM').endOf('month').format('YYYY-MM-DD')
+      setFilters(prev => ({ ...prev, startDate: start, endDate: end }))
+    } else {
+      setFilters(prev => ({
+        ...prev,
+        startDate: '2020-01-01',
+        endDate: todayStr(),
+      }))
+    }
+    showToast(preset.label + ' 数据')
+  }
+
+  const handleResetFilters = () => {
+    setFilters({ platforms: [...PLATFORMS], startDate: weekAgoStr(), endDate: todayStr() })
+    setActivePlatform('all')
+    setSortBy('date')
+    setSortDir('desc')
+    showToast('筛选已重置')
+  }
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(field)
+      setSortDir('desc')
+    }
+  }
+
+  const sortIcons: Record<string, string> = {
+    date: sortBy === 'date' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+    salesAmount: sortBy === 'salesAmount' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+    refundAmount: sortBy === 'refundAmount' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+    paymentCount: sortBy === 'paymentCount' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+    paymentUsers: sortBy === 'paymentUsers' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+    promotionCost: sortBy === 'promotionCost' ? (sortDir === 'desc' ? '↓' : '↑') : '',
+  }
+  const handleTogglePlatform = (platform: string) => {
+    // If clicking the same platform that's already active, switch back to "all"
+    if (activePlatform === platform) {
+      setActivePlatform('all')
+      setFilters(prev => ({ ...prev, platforms: [...PLATFORMS] }))
+    } else {
+      setActivePlatform(platform)
+      setFilters(prev => ({ ...prev, platforms: [platform] }))
+    }
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    console.log('📂 正在导入文件:', file.name, '大小:', file.size, '类型:', file.type)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        console.log('📄 文件读取完成，开始解析...')
+        const result = ev.target?.result
+        const wb = XLSX.read(result, { type: 'array', cellDates: true })
+        console.log('📊 工作表:', wb.SheetNames)
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const json: Record<string, any>[] = XLSX.utils.sheet_to_json(ws)
+        console.log('📋 解析到', json.length, '行数据')
+        console.log('示例数据:', json[0])
+
+        // New flat format: one row per date, channels embedded in column names
+        // Columns: 日期, 归属, 抖店_全部_销售金额, 抖店_全部_退款金额, ..., 抖店_直播_销售金额, ...
+        const PLATFORM_NAMES = ['抖店', '淘宝', '微信', '快手', '拼多多', '小红书']
+
+        const parsed: PlatformData[] = json
+          .filter((row, idx) => {
+            const dt = row['日期'] ?? row['date'] ?? row.Date
+            if (dt == null || String(dt).trim() === '') {
+              console.log(`⚠️ 第${idx+2}行缺少日期:`, row)
+              return false
+            }
+            return true
+          })
+          .flatMap(row => {
+            let dateStr: string
+            const rawDate = row['日期'] ?? row['date'] ?? row.Date
+            if (rawDate instanceof Date) {
+              dateStr = dayjs(rawDate).format('YYYY-MM-DD')
+            } else {
+              dateStr = String(rawDate).replace(/[\/]/g, '-').trim()
+            }
+
+            // Normalize owner
+            const rawOwner = String(row['归属'] ?? row['owner'] ?? row.Owner ?? '').trim()
+            let owner = '管理员'
+            if (/Foryou/i.test(rawOwner) || /访客?[Aa]/.test(rawOwner) || /guest.?a/i.test(rawOwner) || /a店铺/i.test(rawOwner)) {
+              owner = 'Foryou'
+            } else if (/木易杨/.test(rawOwner) || /访客?[Bb]/.test(rawOwner) || /guest.?b/i.test(rawOwner) || /b店铺/i.test(rawOwner)) {
+              owner = '木易杨'
+            } else if (rawOwner) {
+              owner = rawOwner
+            }
+
+            const results: PlatformData[] = []
+            for (const plat of PLATFORM_NAMES) {
+              // Parse "全部" channel data
+              const allSales = Number(row[`${plat}_全部_销售金额`]) || 0
+              const allRefund = Number(row[`${plat}_全部_退款金额`]) || 0
+              const allCount = Number(row[`${plat}_全部_支付件数`]) || 0
+              const allUsers = Number(row[`${plat}_全部_支付人数`]) || 0
+              const allPromo = Number(row[`${plat}_全部_推广费`]) || 0
+              if (allSales > 0 || allRefund > 0 || allCount > 0 || allUsers > 0 || allPromo > 0) {
+                results.push({ date: dateStr, platform: plat, owner, channel: 'normal', salesAmount: allSales, refundAmount: allRefund, paymentCount: allCount, paymentUsers: allUsers, promotionCost: allPromo })
+              }
+
+              // Parse "直播" channel data
+              const liveSales = Number(row[`${plat}_直播_销售金额`]) || 0
+              const liveRefund = Number(row[`${plat}_直播_退款金额`]) || 0
+              const liveCount = Number(row[`${plat}_直播_支付件数`]) || 0
+              const liveUsers = Number(row[`${plat}_直播_支付人数`]) || 0
+              const livePromo = Number(row[`${plat}_直播_推广费`]) || 0
+              if (liveSales > 0 || liveRefund > 0 || liveCount > 0 || liveUsers > 0 || livePromo > 0) {
+                results.push({ date: dateStr, platform: plat, owner, channel: 'live', salesAmount: liveSales, refundAmount: liveRefund, paymentCount: liveCount, paymentUsers: liveUsers, promotionCost: livePromo })
+              }
+            }
+            return results
+          })
+        if (parsed.length === 0) {
+          showToast('⚠️ 未解析到有效数据，请检查格式是否正确')
+          console.warn('⚠️ 没有符合条件的数据，原始行:', json.length)
+          if (json.length > 0) {
+            console.warn('第一行列名:', Object.keys(json[0]))
+          }
+          return
+        }
+
+        // Count by owner
+        const counts: Record<string, number> = {}
+        for (const d of parsed) {
+          counts[d.owner] = (counts[d.owner] || 0) + 1
+        }
+        const ownerSummary = Object.entries(counts)
+          .map(([k, v]) => `${k}: ${v} 条`)
+          .join('、')
+
+        // Always store ALL imported data in adminData (admin sees everything)
+        // Also route to guest datasets by owner for individual account views
+        for (const d of parsed) {
+          setAdminData(prev => [d, ...prev])
+          if (d.owner === 'Foryou') {
+            setGuestAData(prev => [d, ...prev])
+          } else if (d.owner === '木易杨') {
+            setGuestBData(prev => [d, ...prev])
+          }
+        }
+        setShowImportModal(false)
+        showToast(`✅ 成功导入 ${parsed.length} 条数据（${ownerSummary}）`)
+        console.log('✅ 导入完成')
+      } catch (err) {
+        console.error('❌ 解析失败:', err)
+        showToast('❌ 文件解析失败: ' + (err as Error).message)
+      }
+    }
+    reader.onerror = () => {
+      console.error('❌ FileReader 错误')
+      showToast('❌ 文件读取失败')
+    }
+    reader.readAsArrayBuffer(file)
+    e.target.value = ''
+  }
+
+  const handleExportTemplate = () => {
+    const sampleRows = [
+      {
+        '日期': '2026-06-24', '归属': '管理员',
+        // --- 全部渠道 ---
+        '抖店_全部_销售金额': 12345, '抖店_全部_退款金额': 500, '抖店_全部_支付件数': 100, '抖店_全部_支付人数': 85, '抖店_全部_推广费': 2000,
+        '淘宝_全部_销售金额': 23456, '淘宝_全部_退款金额': 600, '淘宝_全部_支付件数': 120, '淘宝_全部_支付人数': 95, '淘宝_全部_推广费': 3000,
+        '微信_全部_销售金额': 34567, '微信_全部_退款金额': 700, '微信_全部_支付件数': 150, '微信_全部_支付人数': 110, '微信_全部_推广费': 4000,
+        '快手_全部_销售金额': 5000, '快手_全部_退款金额': 100, '快手_全部_支付件数': 40, '快手_全部_支付人数': 35, '快手_全部_推广费': 800,
+        '拼多多_全部_销售金额': 8000, '拼多多_全部_退款金额': 200, '拼多多_全部_支付件数': 60, '拼多多_全部_支付人数': 50, '拼多多_全部_推广费': 1200,
+        '小红书_全部_销售金额': 6000, '小红书_全部_退款金额': 150, '小红书_全部_支付件数': 50, '小红书_全部_支付人数': 42, '小红书_全部_推广费': 1000,
+        // --- 直播渠道 ---
+        '抖店_直播_销售金额': 8000, '抖店_直播_退款金额': 300, '抖店_直播_支付件数': 60, '抖店_直播_支付人数': 50, '抖店_直播_推广费': 1500,
+        '淘宝_直播_销售金额': 7000, '淘宝_直播_退款金额': 200, '淘宝_直播_支付件数': 50, '淘宝_直播_支付人数': 40, '淘宝_直播_推广费': 1200,
+        '微信_直播_销售金额': 9000, '微信_直播_退款金额': 400, '微信_直播_支付件数': 70, '微信_直播_支付人数': 55, '微信_直播_推广费': 1800,
+        '快手_直播_销售金额': 0, '快手_直播_退款金额': 0, '快手_直播_支付件数': 0, '快手_直播_支付人数': 0, '快手_直播_推广费': 0,
+        '拼多多_直播_销售金额': 0, '拼多多_直播_退款金额': 0, '拼多多_直播_支付件数': 0, '拼多多_直播_支付人数': 0, '拼多多_直播_推广费': 0,
+        '小红书_直播_销售金额': 0, '小红书_直播_退款金额': 0, '小红书_直播_支付件数': 0, '小红书_直播_支付人数': 0, '小红书_直播_推广费': 0,
+      },
+    ]
+    const ws = XLSX.utils.json_to_sheet(sampleRows)
+    ws['!cols'] = [{wch:16},{wch:16},{wch:16}]
+    for (const p of ['抖店','淘宝','微信','快手','拼多多','小红书']) {
+      for (const f of ['销售金额','退款金额','支付件数','支付人数','推广费']) {
+        const idx = ['抖店','淘宝','微信','快手','拼多多','小红书'].indexOf(p) * 5 + 3 + ['销售金额','退款金额','支付件数','支付人数','推广费'].indexOf(f)
+        ws['!cols'][idx] = {wch:16}
+      }
+    }
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '模板')
+    XLSX.writeFile(wb, '电商数据导入模板.xlsx')
+    showToast('📥 模板已下载')
+  }
+
+  const handleClearData = () => {
+    if (confirm('确定要清空所有数据吗？')) {
+      // Admin clears everything; guests only clear their own data
+      if (currentGuestId === 'guest_a') {
+        setGuestAData([])
+        showToast('🗑️ Foryou数据已清空')
+      } else if (currentGuestId === 'guest_b') {
+        setGuestBData([])
+        showToast('🗑️ 木易杨数据已清空')
+      } else {
+        setGuestAData([])
+        setGuestBData([])
+        setAdminData([])
+        setLiveData([])
+        showToast('🗑️ 所有数据已清空')
+      }
+    }
+  }
+
+  const handleCopyShareLink = () => {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      showToast('🔗 链接已复制到剪贴板')
+    }).catch(() => {
+      showToast('❌ 复制失败')
+    })
+  }
+
+  const handleGenerateShareLink = () => {
+    const newId = uuidv4()
+    setShareLinks(prev => ({ ...prev, [newId]: true }))
+    const url = `${window.location.origin}${window.location.pathname}#share=${newId}`
+    setShareUrl(url)
+    showToast('🔗 分享链接已生成')
+  }
+
+  const handleDeleteLink = (id: string) => {
+    setShareLinks(prev => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    showToast('🔗 分享链接已删除')
+  }
+
+  const handleResetToEdit = () => {
+    setViewMode('edit')
+    window.location.hash = ''
+    showToast('已切换回编辑模式')
+  }
+
+  // ─── Auth ────────────────────────────────────────────
+  const ADMIN_CREDENTIALS = { username: 'admin', password: 'admin123' }
+  const VIEWER_CREDENTIALS = { username: 'viewer', password: 'viewer123' }
+
+  const handleLogin = () => {
+    if (loginUsername === ADMIN_CREDENTIALS.username && loginPassword === ADMIN_CREDENTIALS.password) {
+      setIsLoggedIn(true)
+      setRole('admin')
+      setShowLogin(false)
+      setLoginError('')
+      showToast('👋 欢迎回来，管理员')
+    } else if (loginUsername === VIEWER_CREDENTIALS.username && loginPassword === VIEWER_CREDENTIALS.password) {
+      setIsLoggedIn(true)
+      setRole('viewer')
+      setShowLogin(false)
+      setLoginError('')
+      showToast('👋 欢迎查看数据')
+    } else {
+      setLoginError('用户名或密码错误')
+    }
+  }
+
+  const handleGuestPasswordLogin = () => {
+    const passwords: Record<string, string> = {
+      guest_a: GUEST_PASSWORDS.guest_a,
+      guest_b: GUEST_PASSWORDS.guest_b,
+    }
+    if (guestPassword === passwords[guestLoginTarget!]) {
+      if (guestLoginTarget === 'guest_a') {
+        setCurrentGuestId('guest_a')
+        setCurrentUser('Foryou')
+      } else {
+        setCurrentGuestId('guest_b')
+        setCurrentUser('木易杨')
+      }
+      setIsLoggedIn(true)
+      setRole('viewer')
+      setShowLogin(false)
+      setShowGuestPassword(false)
+      setGuestPassword('')
+      setGuestLoginError('')
+      showToast('👋 欢迎 ' + (guestLoginTarget === 'guest_a' ? 'Foryou' : '木易杨'))
+    } else {
+      setGuestLoginError('密码错误，请重试')
+    }
+  }
+
+  const handleLogout = () => {
+    setIsLoggedIn(false)
+    setRole(null)
+    setShowLogin(true)
+    setLoginUsername('')
+    setLoginPassword('')
+    setLoginError('')
+    setViewMode('edit')
+    setCurrentGuestId(null)
+    setCurrentUser('')
+    showToast('已退出登录')
+  }
+
+  const isAdmin = role === 'admin'
+  const isViewer = role === 'viewer'
+  const effectiveViewMode = isViewer ? 'view' : viewMode
+
+  const formatNum = (n: number) => n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+  const formatMoney = (n: number) => `¥${formatNum(n)}`
+
+  const getHeaderTitle = () => {
+    if (currentGuestId === 'guest_b') return '木易杨 2026年销售报表'
+    if (currentGuestId === 'guest_a') return 'Foryou 2026年销售报表'
+    return '2026年销售报表'
+  }
+
+  // ─── Render ────────────────────────────────────────────
+  return (
+    <div className="app">
+      {/* Login Screen */}
+      {showLogin && (
+        <div className="login-overlay">
+          {/* Floating glow orbs */}
+          <div className="login-orb login-orb-1"></div>
+          <div className="login-orb login-orb-2"></div>
+          <div className="login-orb login-orb-3"></div>
+          <div className="login-card">
+            <div className="login-logo">📊</div>
+            <h2 className="login-title-main">2026年销售报表</h2>
+            {loginError && <div className="login-error">{loginError}</div>}
+            <div className="login-form">
+              <input
+                type="text"
+                className="login-input"
+                placeholder="用户名"
+                value={loginUsername}
+                onChange={e => { setLoginUsername(e.target.value); setLoginError(''); }}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              />
+              <input
+                type="password"
+                className="login-input"
+                placeholder="密码"
+                value={loginPassword}
+                onChange={e => { setLoginPassword(e.target.value); setLoginError(''); }}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              />
+              <button className="btn btn-primary btn-login" onClick={handleLogin}>登 录</button>
+            </div>
+            <div className="login-divider">— 或 —</div>
+            <div className="login-guest-buttons">
+              <button className="btn btn-guest btn-guest-a" onClick={() => {
+  setGuestLoginTarget('guest_a'); setShowGuestPassword(true); setGuestPassword('');
+}}>👤 Foryou</button>
+              <button className="btn btn-guest btn-guest-b" onClick={() => {
+  setGuestLoginTarget('guest_b'); setShowGuestPassword(true); setGuestPassword('');
+}}>👤 木易杨</button>
+            </div>
+          </div>
+
+          {/* Guest Password Modal */}
+          {showGuestPassword && guestLoginTarget && (
+            <div className="guest-password-overlay" onClick={() => setShowGuestPassword(false)}>
+              <div className="guest-password-card" onClick={e => e.stopPropagation()}>
+                <h3>🔒 请输入密码</h3>
+                <p className="guest-password-hint">
+                  {guestLoginTarget === 'guest_a' ? 'Foryou' : '木易杨'} 的专属密码
+                </p>
+                <input
+                  type="password"
+                  className="guest-password-input"
+                  placeholder="密码"
+                  value={guestPassword}
+                  onChange={e => setGuestPassword(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleGuestPasswordLogin()}
+                  autoFocus
+                />
+                {guestLoginError && <div className="login-error">{guestLoginError}</div>}
+                <div className="guest-password-actions">
+                  <button className="btn btn-sm" onClick={() => setShowGuestPassword(false)} style={{ background: '#f1f5f9' }}>取消</button>
+                  <button className="btn btn-primary btn-sm" onClick={handleGuestPasswordLogin}>确认</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Header */}
+      {isLoggedIn && (
+        <header className="header">
+          <div className="header-left">
+            <div className="header-logo">📊</div>
+            <div>
+              <h1>{getHeaderTitle()}</h1>
+              <div className="header-subtitle">
+                {currentUser && <span className="user-badge">{currentUser}</span>}
+                多平台销售数据实时监控与分析
+              </div>
+            </div>
+          </div>
+          <div className="header-right">
+            {isAdmin && (
+              <>
+                <button className="btn btn-outline" onClick={() => setShowImportModal(true)}>📥 导入数据</button>
+                <button className="btn btn-outline" onClick={() => setShowShareModal(true)}>🔗 分享</button>
+                <button className="btn btn-outline" onClick={handleClearData}>🗑️ 清空</button>
+              </>
+            )}
+            <button className="btn btn-white" onClick={handleLogout}>🚪 退出</button>
+          </div>
+        </header>
+      )}
+
+      {/* Toolbar */}
+      <div className="toolbar">
+        <div className="platform-tabs">
+          <button
+            className={`platform-tab ${activePlatform === 'all' ? 'active' : ''}`}
+            onClick={() => { setActivePlatform('all'); setFilters(prev => ({ ...prev, platforms: [...PLATFORMS] })); }}
+          >
+            📋 全部
+          </button>
+          {PLATFORMS.filter(p => !(currentGuestId === 'guest_a' && FORYOU_EXCLUDED_PLATFORMS.includes(p))).map(p => (
+            <button
+              key={p}
+              className={`platform-tab ${activePlatform === p ? 'active' : ''}`}
+              onClick={() => handleTogglePlatform(p)}
+            >
+              {PLATFORM_CONFIG[p]?.icon} {p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Date Picker Row */}
+      <div className="date-picker-row">
+        <input
+          type="date"
+          className="date-input"
+          value={filters.startDate}
+          onChange={e => setFilters(prev => ({ ...prev, startDate: e.target.value }))}
+        />
+        <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>至</span>
+        <input
+          type="date"
+          className="date-input"
+          value={filters.endDate}
+          onChange={e => setFilters(prev => ({ ...prev, endDate: e.target.value }))}
+        />
+        <button className="reset-btn" onClick={handleResetFilters}>
+          ✕ 重置筛选
+        </button>
+        <button
+          className={`live-toggle-btn ${isLiveMode ? 'active' : ''}`}
+          onClick={() => setIsLiveMode(prev => !prev)}
+        >
+          🎙️ 直播
+        </button>
+      </div>
+
+      {/* Quick Filter Bar */}
+      <div className="quick-filter-bar">
+        <div className="filter-section">
+          <span className="filter-label">📅 快速日期：</span>
+          <div className="filter-pills">
+            {Object.entries(datePresets).map(([key, preset]) => (
+              <button
+                key={key}
+                className={`filter-pill ${filters.startDate === dayjs().subtract(preset.days || 0, 'day').format('YYYY-MM-DD') && preset.days !== undefined ? 'active' : ''}`}
+                onClick={() => handleDatePreset(key)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="filter-section" style={{ display: 'none' }}>
+          <span className="filter-label">🔄 排序：</span>
+          <div className="filter-pills">
+            {[
+              { key: 'date', label: '日期' },
+              { key: 'salesAmount', label: '销售额' },
+              { key: 'refundAmount', label: '退款额' },
+              { key: 'paymentCount', label: '支付件数' },
+              { key: 'paymentUsers', label: '支付人数' },
+              { key: 'promotionCost', label: '推广费' },
+            ].map(f => (
+              <button
+                key={f.key}
+                className={`filter-pill ${sortBy === f.key ? 'active' : ''}`}
+                onClick={() => handleSort(f.key)}
+              >
+                {f.label}{sortIcons[f.key]}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Main */}
+      <div className="main">
+        {/* Summary Cards */}
+        <div className="summary-header">
+          {activePlatform !== 'all' && (
+            <div className="platform-badge-large">
+              {PLATFORM_CONFIG[activePlatform]?.icon} {activePlatform} 数据
+            </div>
+          )}
+        </div>
+        <div className="summary-grid">
+          <div className="summary-card">
+            <div className="label">💰 销售金额</div>
+            <div className="value">{formatMoney(summary.totalSales)}</div>
+          </div>
+          <div className="summary-card">
+            <div className="label">↩️ 退款金额</div>
+            <div className="value negative">{formatMoney(summary.totalRefund)}</div>
+          </div>
+          <div className="summary-card">
+            <div className="label">📦 支付件数</div>
+            <div className="value">{formatNum(summary.totalCount)}</div>
+          </div>
+          <div className="summary-card">
+            <div className="label">👥 支付人数</div>
+            <div className="value positive">{formatNum(summary.totalUsers)}</div>
+          </div>
+          <div className="summary-card">
+            <div className="label">📢 推广费</div>
+            <div className="value warning">{formatMoney(summary.totalPromotion)}</div>
+          </div>
+          <div className="summary-card">
+            <div className="label">📉 退款率</div>
+            <div className="value negative">{summary.refundRate.toFixed(2)}%</div>
+          </div>
+        </div>
+
+        {/* Charts */}
+        <div className="chart-grid">
+          <div className="chart-section">
+            <div className="chart-title">每日销售趋势</div>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={dailyTrend}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `¥${(v / 1000).toFixed(0)}k`} />
+                <Tooltip
+                  formatter={(value) => [`¥${formatNum(Number(value ?? 0))}`, undefined]}
+                  contentStyle={{ borderRadius: 10, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                />
+                <Bar dataKey="sales" name="销售额" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={40} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="chart-section">
+            <div className="chart-title">平台占比</div>
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={pieData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={55}
+                  outerRadius={100}
+                  paddingAngle={3}
+                  dataKey="value"
+                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                  labelLine={false}
+                >
+                  {pieData.map((_, i) => (
+                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value) => `¥${formatNum(Number(value ?? 0))}`} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+
+        {/* Data Table */}
+        <div className="table-section">
+          <div className="chart-title">数据明细</div>
+          {filteredData.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">📭</div>
+              <h3>暂无数据</h3>
+              <p>点击「导入数据」上传Excel文件或调整筛选条件</p>
+              {effectiveViewMode !== 'view' && (
+                <button className="btn btn-primary" onClick={() => setShowImportModal(true)}>📥 导入数据</button>
+              )}
+            </div>
+          ) : (
+            <div className="table-wrapper">
+              <div className="table-header-bar">
+                <span className="table-count">共 {filteredData.length} 条记录</span>
+              </div>
+              <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="sortable" onClick={() => handleSort('date')}>日期 {sortIcons.date}</th>
+                  <th>平台</th>
+                  <th className="sortable" onClick={() => handleSort('salesAmount')}>销售金额 {sortIcons.salesAmount}</th>
+                  <th className="sortable" onClick={() => handleSort('refundAmount')}>退款金额 {sortIcons.refundAmount}</th>
+                  <th className="sortable" onClick={() => handleSort('paymentCount')}>支付件数 {sortIcons.paymentCount}</th>
+                  <th className="sortable" onClick={() => handleSort('paymentUsers')}>支付人数 {sortIcons.paymentUsers}</th>
+                  <th className="sortable" onClick={() => handleSort('promotionCost')}>推广费 {sortIcons.promotionCost}</th>
+                  <th>退款率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredData
+                  .sort((a, b) => b.date.localeCompare(a.date) || PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform))
+                  .map((row, i) => {
+                    const refundRate = row.salesAmount > 0 ? (row.refundAmount / row.salesAmount * 100) : 0
+                    const cfg = PLATFORM_CONFIG[row.platform] || { icon: '📌', cls: '' }
+                    return (
+                      <tr key={i}>
+                        <td>{row.date}</td>
+                        <td>
+                          <span className={`platform-icon ${cfg.cls}`}>
+                            {cfg.icon} {row.platform}
+                          </span>
+                        </td>
+                        <td>{formatMoney(row.salesAmount)}</td>
+                        <td style={{ color: 'var(--danger)' }}>{formatMoney(row.refundAmount)}</td>
+                        <td>{formatNum(row.paymentCount)}</td>
+                        <td>{formatNum(row.paymentUsers)}</td>
+                        <td>{formatMoney(row.promotionCost)}</td>
+                        <td style={{ color: refundRate > 10 ? 'var(--danger)' : 'var(--success)' }}>
+                          {refundRate.toFixed(2)}%
+                        </td>
+                      </tr>
+                    )
+                  })}
+                {/* Total row */}
+                <tr className="total-row">
+                  <td colSpan={2}>📊 汇总</td>
+                  <td>{formatMoney(summary.totalSales)}</td>
+                  <td>{formatMoney(summary.totalRefund)}</td>
+                  <td>{formatNum(summary.totalCount)}</td>
+                  <td>{formatNum(summary.totalUsers)}</td>
+                  <td>{formatMoney(summary.totalPromotion)}</td>
+                  <td>{summary.refundRate.toFixed(2)}%</td>
+                </tr>
+              </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Monthly Breakdown */}
+        {monthlyBreakdown.length > 0 && (
+          <div className="monthly-section">
+            <div className="monthly-title">📅 月度汇总</div>
+            <div className="monthly-table-wrapper">
+              <table className="monthly-table">
+                <thead>
+                  <tr>
+                    <th>月份</th>
+                    <th>销售金额</th>
+                    <th>退款金额</th>
+                    <th>支付件数</th>
+                    <th>支付人数</th>
+                    <th>推广费</th>
+                    <th>退款率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlyBreakdown.map(m => (
+                    <tr key={m.month} className="monthly-row">
+                      <td className="month-label">{m.month}</td>
+                      <td>{formatMoney(m.sales)}</td>
+                      <td style={{ color: 'var(--danger)' }}>{formatMoney(m.refund)}</td>
+                      <td>{formatNum(m.count)}</td>
+                      <td>{formatNum(m.users)}</td>
+                      <td>{formatMoney(m.promotion)}</td>
+                      <td style={{ color: m.refundRate > 10 ? 'var(--danger)' : 'var(--success)' }}>
+                        {m.refundRate.toFixed(2)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Import Modal */}
+      {showImportModal && effectiveViewMode !== 'view' && (
+        <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); setShowImportModal(false); }}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>📥 导入数据</h2>
+            <p>上传 Excel 或 CSV 文件，或下载模板后填写</p>
+            <div style={{ marginBottom: 12, padding: '8px 12px', background: '#eff6ff', borderRadius: 8, fontSize: 13, color: '#1e40af', lineHeight: 1.6 }}>
+              💡 文件中每行可标注 <strong>owner</strong> 列：<strong>Foryou</strong>、<strong>木易杨</strong> 或 <strong>管理员</strong>，系统会自动按归属分别存入对应店铺。<br/>
+              未填写 owner 的行默认归入 <strong>管理员</strong>。
+            </div>
+            <button className="btn btn-primary btn-sm" style={{ marginBottom: 16 }} onClick={handleExportTemplate}>
+              📄 下载导入模板
+            </button>
+            <div
+              className="file-upload"
+              onClick={(e) => { e.stopPropagation(); document.getElementById('fileInput')?.click(); }}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const files = e.dataTransfer?.files;
+                if (files && files[0]) {
+                  const fakeEvent = {
+                    target: { files, value: '' },
+                  } as any;
+                  handleFileUpload(fakeEvent);
+                }
+              }}
+            >
+              <div className="file-upload-icon">📂</div>
+              <div className="file-upload-text">
+                点击或拖拽文件到此处上传<br/>
+                <strong>支持 .xlsx, .xls, .csv</strong>
+              </div>
+              <div className="file-upload-hint">每行填一个日期，各平台分"全部"和"直播"两栏填写（如：抖店_全部_销售金额、抖店_直播_销售金额...），填0或留空表示无数据</div>
+            </div>
+            <input
+              id="fileInput"
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              style={{ display: 'none' }}
+              onChange={handleFileUpload}
+            />
+            <div className="modal-actions">
+              <button className="btn btn-sm" onClick={() => setShowImportModal(false)} style={{ background: '#f1f5f9' }}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Share Modal */}
+      {showShareModal && effectiveViewMode !== 'view' && (
+        <div className="modal-overlay" onClick={() => setShowShareModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>🔗 分享数据</h2>
+            <p>生成分享链接，其他人可通过链接查看数据（只读模式）</p>
+            {shareUrl && (
+              <div className="share-link-group">
+                <input value={shareUrl} readOnly />
+                <button className="btn btn-primary btn-sm" onClick={handleCopyShareLink}>复制</button>
+              </div>
+            )}
+            <div className="modal-actions">
+              <button className="btn btn-sm" onClick={() => setShowShareModal(false)} style={{ background: '#f1f5f9' }}>关闭</button>
+              <button className="btn btn-primary btn-sm" onClick={handleGenerateShareLink}>生成新链接</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  )
+}
