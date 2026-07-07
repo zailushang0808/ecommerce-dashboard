@@ -42,7 +42,7 @@ const PLATFORM_CONFIG: Record<string, { icon: string; cls: string }> = {
 const GUEST_PASSWORDS = { guest_a: 'foryou123', guest_b: 'muyiyang123' }
 
 // ─── API Configuration ─────────────────────────────────
-const API_BASE = 'https://ecom-dashboard-sync.zailushang.workers.dev/api/data'
+const API_BASE = 'https://dry-hat-275a.86080824.workers.dev/api/data'
 const SYNC_KEY = 'ecom_sync_enabled'
 
 async function fetchFromAPI(): Promise<PlatformData[]> {
