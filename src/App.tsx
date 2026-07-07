@@ -41,6 +41,58 @@ const PLATFORM_CONFIG: Record<string, { icon: string; cls: string }> = {
 
 const GUEST_PASSWORDS = { guest_a: 'foryou123', guest_b: 'muyiyang123' }
 
+// ─── API Configuration ─────────────────────────────────
+const API_BASE = '/api/data'
+const SYNC_KEY = 'ecom_sync_enabled'
+
+async function fetchFromAPI(): Promise<PlatformData[]> {
+  try {
+    const resp = await fetch(API_BASE)
+    if (!resp.ok) return []
+    const result = await resp.json()
+    return result.success ? (result.data || []) : []
+  } catch {
+    return []
+  }
+}
+
+async function uploadToAPI(records: PlatformData[]): Promise<boolean> {
+  try {
+    const resp = await fetch(API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'import', records }),
+    })
+    const result = await resp.json()
+    return result.success
+  } catch {
+    return false
+  }
+}
+
+async function clearAPI(): Promise<boolean> {
+  try {
+    const resp = await fetch(API_BASE, { method: 'DELETE' })
+    const result = await resp.json()
+    return result.success
+  } catch {
+    return false
+  }
+}
+
+function isSyncEnabled(): boolean {
+  return localStorage.getItem(SYNC_KEY) === 'true'
+}
+
+function enableSync(): void {
+  localStorage.setItem(SYNC_KEY, 'true')
+}
+
+function disableSync(): void {
+  localStorage.setItem(SYNC_KEY, 'false')
+}
+
+
 const PIE_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6']
 
 const GUEST_A_DATA_KEY = 'ecom_dashboard_guest_a_data'
@@ -67,14 +119,29 @@ function weekAgoStr() {
   return dayjs().subtract(6, 'day').format('YYYY-MM-DD')
 }
 
-function generateShareLink() {
-  return `${window.location.origin}${window.location.pathname}#share=${uuidv4()}`
+function encodeDataToUrl(data: PlatformData[]): string {
+  const json = JSON.stringify(data)
+  return btoa(unescape(encodeURIComponent(json)))
 }
 
-function parseShareLink(): string | null {
+function decodeUrlToData(hash: string): PlatformData[] | null {
+  try {
+    const raw = atob(hash)
+    const json = decodeURIComponent(escape(raw))
+    return JSON.parse(json) as PlatformData[]
+  } catch {
+    return null
+  }
+}
+
+function parseShareLink(): PlatformData[] | null {
   const hash = window.location.hash.slice(1)
-  const match = hash.match(/share=([a-z0-9-]+)/i)
-  return match ? match[1] : null
+  if (!hash) return null
+  // Try as compressed data first (if it looks like base64 of compressed data)
+  // Then try as base64 encoded JSON
+  const decoded = decodeUrlToData(hash)
+  if (decoded && Array.isArray(decoded)) return decoded
+  return null
 }
 
 // ─── Demo Data ───────────────────────────────────────────
@@ -147,8 +214,10 @@ export default function App() {
   // Admin data (no owner)
   const [adminData, setAdminData] = useState<PlatformData[]>(() => loadFromStorage(ADMIN_DATA_KEY, []))
   const [liveData, setLiveData] = useState<PlatformData[]>(() => loadFromStorage(LIVE_DATA_KEY, []))
+  const [syncEnabled, setSyncEnabled] = useState(() => isSyncEnabled())
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle')
   const [isLiveMode, setIsLiveMode] = useState(false)
-  const [shareLinks, setShareLinks] = useState<Record<string, boolean>>(() => loadFromStorage(LINKS_KEY, {}))
+  const [shareLinks, setShareLinks] = useState<Record<string, boolean>>({})
   const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD')
   const [filters, setFilters] = useState<FilterState>({
     platforms: [...PLATFORMS],
@@ -179,12 +248,13 @@ export default function App() {
   const [guestLoginTarget, setGuestLoginTarget] = useState<'guest_a' | 'guest_b' | null>(null)
   const [guestLoginError, setGuestLoginError] = useState('')
 
-  // Check share link on mount
+  // Check share link on mount - decode data from URL
   useEffect(() => {
-    const linkId = parseShareLink()
-    if (linkId && shareLinks[linkId]) {
+    const sharedData = parseShareLink()
+    if (sharedData && sharedData.length > 0) {
+      setAdminData(sharedData)
       setViewMode('view')
-      showToast('当前为只读模式（分享链接查看）')
+      showToast('正在加载分享数据（只读模式）')
     }
   }, [])
 
@@ -205,9 +275,37 @@ export default function App() {
     localStorage.setItem(LIVE_DATA_KEY, JSON.stringify(liveData))
   }, [liveData])
 
+  // ─── Cloud Sync: Load from API on mount ──────────────────
   useEffect(() => {
-    localStorage.setItem(LINKS_KEY, JSON.stringify(shareLinks))
-  }, [shareLinks])
+    if (!syncEnabled) return
+    let cancelled = false
+    setSyncStatus('syncing')
+    fetchFromAPI().then(data => {
+      if (cancelled) return
+      if (data && data.length > 0) {
+        setAdminData(data)
+        setSyncStatus('synced')
+        showToast('Cloud loaded ' + data.length + ' records')
+      } else {
+        setSyncStatus('synced')
+      }
+    }).catch(() => {
+      if (!cancelled) setSyncStatus('error')
+    })
+    return () => { cancelled = true }
+  }, [syncEnabled])
+
+  // ─── Cloud Sync: Upload when data changes ────────────────
+  useEffect(() => {
+    if (!syncEnabled || adminData.length === 0) return
+    setSyncStatus('syncing')
+    uploadToAPI(adminData).then(ok => {
+      setSyncStatus(ok ? 'synced' : 'error')
+    }).catch(() => setSyncStatus('error'))
+  }, [adminData, syncEnabled])
+
+
+
 
   // Persist auth state
   useEffect(() => {
@@ -454,7 +552,19 @@ export default function App() {
             let dateStr: string
             const rawDate = row['日期'] ?? row['date'] ?? row.Date
             if (rawDate instanceof Date) {
-              dateStr = dayjs(rawDate).format('YYYY-MM-DD')
+              const y = rawDate.getUTCFullYear()
+              const m = String(rawDate.getUTCMonth() + 1).padStart(2, '0')
+              const d = String(rawDate.getUTCDate()).padStart(2, '0')
+              dateStr = `${y}-${m}-${d}`
+            } else if (typeof rawDate === 'number') {
+              // Excel serial date number -> YYYY-MM-DD
+              // Excel epoch is 1899-12-30 (day 0). Use UTC arithmetic to avoid timezone shifts.
+              const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+              const jsDate = new Date(excelEpoch.getTime() + rawDate * 86400 * 1000)
+              const y = jsDate.getUTCFullYear()
+              const m = String(jsDate.getUTCMonth() + 1).padStart(2, '0')
+              const d = String(jsDate.getUTCDate()).padStart(2, '0')
+              dateStr = `${y}-${m}-${d}`
             } else {
               dateStr = String(rawDate).replace(/[\/]/g, '-').trim()
             }
@@ -600,21 +710,19 @@ export default function App() {
   }
 
   const handleGenerateShareLink = () => {
-    const newId = uuidv4()
-    setShareLinks(prev => ({ ...prev, [newId]: true }))
-    const url = `${window.location.origin}${window.location.pathname}#share=${newId}`
+    const dataToShare = adminData.length > 0 ? adminData : liveData
+    if (dataToShare.length === 0) {
+      showToast('⚠️ 没有数据可分享')
+      return
+    }
+    const dataJson = JSON.stringify(dataToShare)
+    const encoded = btoa(unescape(encodeURIComponent(dataJson)))
+    const url = `${window.location.origin}${window.location.pathname}#${encoded}`
     setShareUrl(url)
-    showToast('🔗 分享链接已生成')
+    showToast('🔗 分享链接已生成（包含当前数据）')
   }
 
-  const handleDeleteLink = (id: string) => {
-    setShareLinks(prev => {
-      const next = { ...prev }
-      delete next[id]
-      return next
-    })
-    showToast('🔗 分享链接已删除')
-  }
+
 
   const handleResetToEdit = () => {
     setViewMode('edit')
@@ -786,11 +894,30 @@ export default function App() {
                 <button className="btn btn-outline" onClick={() => setShowImportModal(true)}>📥 导入数据</button>
                 <button className="btn btn-outline" onClick={() => setShowShareModal(true)}>🔗 分享</button>
                 <button className="btn btn-outline" onClick={handleClearData}>🗑️ 清空</button>
+                <button 
+                  className="btn btn-outline" 
+                  onClick={() => {
+                    const newState = !syncEnabled
+                    setSyncEnabled(newState)
+                    newState ? enableSync() : disableSync()
+                    newState ? showToast('Cloud sync ON') : showToast('Cloud sync OFF')
+                  }}
+                  title={syncEnabled ? 'Cloud sync enabled' : 'Cloud sync disabled'}
+                >
+                  {syncEnabled ? '☁️ Sync ON' : '🔒 Sync OFF'}
+                </button>
               </>
             )}
             <button className="btn btn-white" onClick={handleLogout}>🚪 退出</button>
           </div>
         </header>
+      )}
+
+      {/* Sync Status */}
+      {syncEnabled && (
+        <div style={{ textAlign: 'center', padding: '4px 0', fontSize: 12, color: syncStatus === 'synced' ? '#10b981' : syncStatus === 'error' ? '#ef4444' : '#64748b' }}>
+          {syncStatus === 'synced' ? '✅ Data synced to cloud' : syncStatus === 'error' ? '❌ Sync failed' : syncStatus === 'syncing' ? '⏳ Syncing...' : ''}
+        </div>
       )}
 
       {/* Toolbar */}
@@ -1124,7 +1251,7 @@ export default function App() {
         <div className="modal-overlay" onClick={() => setShowShareModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>🔗 分享数据</h2>
-            <p>生成分享链接，其他人可通过链接查看数据（只读模式）</p>
+            <p>生成分享链接，包含当前所有数据，手机打开即可查看（只读模式）</p>
             {shareUrl && (
               <div className="share-link-group">
                 <input value={shareUrl} readOnly />
